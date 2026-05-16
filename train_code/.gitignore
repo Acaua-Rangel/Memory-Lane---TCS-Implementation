@@ -1,0 +1,35 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Data & outputs
+data/*.jsonl
+data/*.db
+outputs/
+*.pt
+*.safetensors
+wandb/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kaggle
+*.ipynb_checkpoints/
+
+.coverage
+.pytest_cache/

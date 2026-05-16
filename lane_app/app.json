@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "Lane",
+    "slug": "lane-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.memorylane.lane",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Lane usa a câmera para reconhecer familiares e cuidadores.",
+        "NSMicrophoneUsageDescription": "Lane usa o microfone para escutar comandos de voz.",
+        "NSSpeechRecognitionUsageDescription": "Lane usa reconhecimento de voz para entender você."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.memorylane.lane",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Lane usa a câmera para reconhecer pessoas próximas a você."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#4A90E2"
+        }
+      ],
+      "expo-speech-recognition"
+    ]
+  }
+}

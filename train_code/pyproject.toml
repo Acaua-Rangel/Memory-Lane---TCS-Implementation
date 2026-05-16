@@ -1,0 +1,49 @@
+[tool.poetry]
+name = "gemma4-memory-companion"
+version = "0.1.0"
+description = "Gemma 4 E2B with Token Compression Sub-network + LoRA for an Alzheimer memory companion — Google DeepMind Gemma 4 Hackathon"
+authors = ["ABRAZIL"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+torch = ">=2.1.0"
+transformers = ">=4.44.0"
+peft = ">=0.12.0"
+datasets = ">=2.19.0"
+accelerate = ">=0.30.0"
+safetensors = ">=0.4.0"
+sqlite-vec = ">=0.1.0"
+numpy = ">=1.24.0"
+tqdm = ">=4.66.0"
+pyyaml = ">=6.0"
+onnxruntime = ">=1.17.0"
+
+# Optional: Special Technology Track integrations
+# pip install unsloth        # Unsloth prize — 2x faster LoRA training
+# pip install ai-edge-torch  # LiteRT prize — Google AI Edge export
+unsloth = {version = ">=2026.4.8", python = ">=3.10,<3.15"}
+
+# Optional: Gemini API mode for larger model data generation
+google-genai = {version = ">=1.0.0", optional = true}
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.4.0"
+pytest-cov = ">=4.1.0"
+
+[tool.poetry.scripts]
+train = "src.train:main"
+train-ddp = "src.train_ddp:main"
+train-unsloth = "src.train_unsloth:main"
+generate-data = "src.data:main"
+infer = "src.inference:main"
+export-litert = "src.export_litert:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

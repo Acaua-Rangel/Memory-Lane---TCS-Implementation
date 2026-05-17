@@ -1,10 +1,8 @@
 // STT via expo-speech-recognition — reconhecimento offline no Android/iOS.
 // Substitui o deprecado @react-native-voice/voice.
 
-import {
-  ExpoSpeechRecognitionModule,
-  addSpeechRecognitionListener,
-} from 'expo-speech-recognition';
+import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
+import type { ExpoSpeechRecognitionResultEvent, ExpoSpeechRecognitionErrorEvent } from 'expo-speech-recognition';
 import type { STTResult } from '../types';
 import { VOICE } from '../config/constants';
 
@@ -16,16 +14,16 @@ export class SpeechToText {
   private onError: STTErrorCallback | null = null;
   private isListening = false;
   private language: string;
-  private subscriptions: ReturnType<typeof addSpeechRecognitionListener>[] = [];
+  private subscriptions: { remove: () => void }[] = [];
 
-  constructor(language = VOICE.DEFAULT_LANGUAGE) {
+  constructor(language: string = VOICE.DEFAULT_LANGUAGE) {
     this.language = language;
   }
 
   private setupListeners(onResult: STTCallback, onError?: STTErrorCallback): void {
     this.clearListeners();
 
-    const resultSub = addSpeechRecognitionListener('result', (event) => {
+    const resultSub = ExpoSpeechRecognitionModule.addListener('result', (event: ExpoSpeechRecognitionResultEvent) => {
       const transcript = event.results?.[0]?.transcript ?? '';
       const isFinal = event.isFinal ?? false;
 
@@ -36,14 +34,14 @@ export class SpeechToText {
       }
     });
 
-    const errorSub = addSpeechRecognitionListener('error', (event) => {
+    const errorSub = ExpoSpeechRecognitionModule.addListener('error', (event: ExpoSpeechRecognitionErrorEvent) => {
       const error = event.error ?? 'STT error';
       console.error('[STT] Erro:', error);
       this.isListening = false;
       onError?.(error);
     });
 
-    const endSub = addSpeechRecognitionListener('end', () => {
+    const endSub = ExpoSpeechRecognitionModule.addListener('end', () => {
       this.isListening = false;
     });
 

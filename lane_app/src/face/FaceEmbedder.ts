@@ -2,9 +2,21 @@
 // Arquivo do modelo: assets/models/mobilefacenet.onnx (1MB)
 // Accuracy: 99.55% no LFW — suficiente para ~50 faces conhecidas
 
-import { InferenceSession, Tensor } from 'onnxruntime-react-native';
+// onnxruntime-react-native is imported lazily inside methods to avoid installing
+// JSI bindings at module load time (which crashes before the RN bridge is ready).
+import type { InferenceSession, Tensor } from 'onnxruntime-react-native';
 import type { FaceEmbedding, BoundingBox, CameraFrame } from '../types';
 import { CAMERA } from '../config/constants';
+
+type OnnxModule = typeof import('onnxruntime-react-native');
+let _onnx: OnnxModule | null = null;
+function getOnnx(): OnnxModule {
+  if (!_onnx) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _onnx = require('onnxruntime-react-native') as OnnxModule;
+  }
+  return _onnx;
+}
 
 export interface IFaceEmbedder {
   loadModel(modelPath?: string): Promise<void>;
@@ -19,7 +31,7 @@ export class MobileFaceNetEmbedder implements IFaceEmbedder {
 
   async loadModel(modelPath: string = CAMERA.MODEL_PATH): Promise<void> {
     try {
-      this.session = await InferenceSession.create(modelPath);
+      this.session = await getOnnx().InferenceSession.create(modelPath);
       console.log('[MobileFaceNetEmbedder] Modelo ONNX carregado');
     } catch (err) {
       console.error('[MobileFaceNetEmbedder] Falha ao carregar modelo:', err);
@@ -62,7 +74,7 @@ export class MobileFaceNetEmbedder implements IFaceEmbedder {
     }
 
     // Layout: NCHW (1, 3, 112, 112)
-    return new Tensor('float32', normalized, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+    return new (getOnnx().Tensor)('float32', normalized, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
   }
 }
 

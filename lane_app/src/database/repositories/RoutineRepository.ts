@@ -42,6 +42,10 @@ export class RoutineRepository {
       [data.id, data.timeOfDay, data.order, data.title, data.description],
     );
   }
+
+  async delete(id: string): Promise<void> {
+    await this.db.runAsync('DELETE FROM routine_steps WHERE id = ?', [id]);
+  }
 }
 
 interface RawRoutine {

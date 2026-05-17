@@ -73,7 +73,7 @@ export class LaneDatabase {
     await this.db.withTransactionAsync(async () => {
       // Pessoas
       for (const p of SAMPLE_PERSONS) {
-        await this.persons.upsert({ ...p, createdAt: Date.now(), updatedAt: Date.now() });
+        await this.persons.upsert({ ...p });
       }
 
       // Medicamentos
@@ -100,7 +100,11 @@ export class LaneDatabase {
 
   // Transação explícita para operações compostas
   async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
-    return this.db.withTransactionAsync(fn);
+    let result!: T;
+    await this.db.withTransactionAsync(async () => {
+      result = await fn();
+    });
+    return result;
   }
 
   async close(): Promise<void> {

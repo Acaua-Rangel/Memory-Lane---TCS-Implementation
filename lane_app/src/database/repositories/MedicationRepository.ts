@@ -60,6 +60,10 @@ export class MedicationRepository {
       [isActive ? 1 : 0, id],
     );
   }
+
+  async delete(id: string): Promise<void> {
+    await this.db.runAsync('DELETE FROM medication_schedule WHERE id = ?', [id]);
+  }
 }
 
 interface RawMedication {

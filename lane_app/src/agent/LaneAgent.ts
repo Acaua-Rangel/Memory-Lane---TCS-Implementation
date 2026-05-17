@@ -138,7 +138,7 @@ export class LaneAgent {
         parameters: { time_of_day: timeOfDay },
       });
       toolResults.push(result);
-      speech = this.formatMedicationResponse(result.data as ReturnType<typeof formatMedData>);
+      speech = this.formatMedicationResponse(result.data as formatMedData);
     } else if (decision.intent === 'agenda_query') {
       const today = new Date().getDay();
       const result = await this.toolExecutor.execute({
@@ -146,7 +146,7 @@ export class LaneAgent {
         parameters: { day_of_week: String(today) },
       });
       toolResults.push(result);
-      speech = this.formatAgendaResponse(result.data as ReturnType<typeof formatAgendaData>);
+      speech = this.formatAgendaResponse(result.data as formatAgendaData);
     } else if (decision.intent === 'routine_query') {
       const timeOfDay = TR.timeOfDay();
       const result = await this.toolExecutor.execute({
@@ -154,7 +154,7 @@ export class LaneAgent {
         parameters: { time_of_day: timeOfDay },
       });
       toolResults.push(result);
-      speech = this.formatRoutineResponse(result.data as ReturnType<typeof formatRoutineData>);
+      speech = this.formatRoutineResponse(result.data as formatRoutineData);
     }
 
     if (!speech) speech = 'Não encontrei essa informação. Pode me dar mais detalhes?';

@@ -56,6 +56,12 @@
         }
       ],
       "expo-speech-recognition"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e69191ef-9370-4025-9812-1b47a1f65500"
+      }
+    },
+    "owner": "devsuzarte"
   }
 }

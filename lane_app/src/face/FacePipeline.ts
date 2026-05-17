@@ -16,7 +16,7 @@ export interface FacePipelineResult {
 
 export class FacePipeline {
   private lastFrameTime = 0;
-  private frameIntervalMs = CAMERA.FACE_DETECTION_INTERVAL_MS;
+  private frameIntervalMs: number = CAMERA.FACE_DETECTION_INTERVAL_MS;
 
   // Cache em memória — evita re-identificar a mesma pessoa a cada frame
   private lastIdentifiedId: string | null = null;

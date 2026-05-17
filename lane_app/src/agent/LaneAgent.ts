@@ -21,7 +21,7 @@ import type {
   FaceDetection,
   IdentifiedPerson,
 } from '../types';
-import { parseAllToolCalls, formatToolResult } from '../tools/toolParser';
+import { formatToolResult } from '../tools/toolParser';
 import { TaskRouter as TR } from '../routing/TaskRouter';
 
 export class LaneAgent {
@@ -206,38 +206,59 @@ export class LaneAgent {
       };
     }
 
-    const text = input.text ?? 'Olá';
+    const text = input.text ?? 'Hello';
     const ratio = decision.compressionRatio ?? 4;
 
     const llmResult = await this.engine.generateWithTools(text, ratio);
+    const primarySpeech = llmResult.finalResponse.trim();
+    let toolResults: Awaited<ReturnType<typeof this.toolExecutor.executeAll>> | undefined;
 
-    // Se o LLM gerou tool calls, executa e refina a resposta
+    // Executa as tools (efeito colateral: registrar encontro, etc.) e, se o
+    // engine ainda não tiver fechado a resposta, refina com o contexto.
     if (llmResult.parsedCalls.length > 0) {
-      const toolResults = await this.toolExecutor.executeAll(llmResult.parsedCalls);
+      toolResults = await this.toolExecutor.executeAll(llmResult.parsedCalls);
 
-      // Injeta os resultados das tools no contexto e gera resposta final
-      const toolContext = toolResults
-        .map((r) => formatToolResult(r.toolName, r.data, r.error))
-        .join('\n');
-
-      const finalResult = await this.engine.generateWithTools(
-        `${text}\n\nResultados das ferramentas:\n${toolContext}`,
-        ratio,
-      );
-
-      return {
-        speech: finalResult.finalResponse || llmResult.finalResponse || text,
-        toolResults,
-        route: decision.route,
-        latencyMs: Date.now() - start,
-      };
+      if (!primarySpeech) {
+        const toolContext = toolResults
+          .map((r) => formatToolResult(r.toolName, r.data, r.error))
+          .join('\n');
+        const refined = await this.engine.generateWithTools(
+          `${text}\n\nResultados das ferramentas:\n${toolContext}`,
+          ratio,
+        );
+        return {
+          speech: refined.finalResponse.trim() || this.intentFallback(decision, text),
+          toolResults,
+          route: decision.route,
+          latencyMs: Date.now() - start,
+        };
+      }
     }
 
     return {
-      speech: llmResult.finalResponse || 'Entendi. Posso ajudar com mais alguma coisa?',
+      speech: primarySpeech || this.intentFallback(decision, text),
+      toolResults,
       route: decision.route,
       latencyMs: Date.now() - start,
     };
+  }
+
+  // Fallback usado quando o engine devolve string vazia. Cada intent tem uma
+  // frase específica — nunca mais "Entendi. Posso ajudar com mais alguma coisa?".
+  private intentFallback(decision: RouteDecision, text: string): string {
+    switch (decision.intent) {
+      case 'greeting':
+        return 'Oi, estou aqui com você.';
+      case 'memory_recall':
+        return 'Posso te contar sobre as pessoas que registrei. Me diz um nome ou pergunta "quem passou aqui hoje?".';
+      case 'location_orientation':
+        return 'Você está em casa. Vamos juntos: respira fundo, está tudo seguro.';
+      case 'scene_description':
+        return 'Estou vendo o ambiente. Pode me perguntar onde está ou quem está aí.';
+      case 'general_query':
+      default:
+        return `Não peguei essa: "${text.trim()}". Tente perguntar sobre remédio, agenda ou alguém que você queira lembrar.`;
+    }
   }
 
   // ── Formatadores de resposta ──────────────────────────────────────────────

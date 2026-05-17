@@ -27,6 +27,7 @@ unsloth = {version = ">=2026.4.8", python = ">=3.10,<3.15"}
 
 # Optional: Gemini API mode for larger model data generation
 google-genai = {version = ">=1.0.0", optional = true}
+onnx = "^1.21.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.4.0"

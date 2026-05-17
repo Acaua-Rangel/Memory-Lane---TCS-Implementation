@@ -10,7 +10,8 @@ import { FacePipeline } from '../face/FacePipeline';
 import { FaceIdentifier } from '../face/FaceIdentifier';
 import { MobileFaceNetEmbedder, MockFaceEmbedder } from '../face/FaceEmbedder';
 import { CaregiverAlertService } from '../alerts/CaregiverAlertService';
-import { createGemmaEngine } from '../engine/GemmaEngine';
+import { TCSOnnxEngine } from '../engine/TCSOnnxEngine';
+import type { IGemmaEngine } from '../engine/GemmaEngine';
 import { useAgentStore } from '../store/agentStore';
 import { usePatientStore } from '../store/patientStore';
 import type { AgentInput, AgentResponse, CameraFrame, FaceDetection } from '../types';
@@ -63,9 +64,19 @@ export function useAgent() {
         const facePipeline = new FacePipeline(embedder, identifier);
         if (mounted) setFaceEngineReady(true);
 
-        // 4. Gemma Engine (mock em dev)
-        const engine = createGemmaEngine(IS_DEV);
-        await engine.loadModel({ modelPath: 'assets/models/gemma4_tcs_lora.tflite' });
+        // 4. Engine on-device — carrega o TCS exportado (tcs_compression.onnx)
+        // via onnxruntime-react-native e usa o banco para gerar respostas
+        // aterradas em vez de strings fixas.
+        const engine: IGemmaEngine = new TCSOnnxEngine(db);
+        try {
+          await engine.loadModel({
+            modelPath: 'assets/models/tcs_compression.onnx',
+            compressionRatio: 4,
+          });
+        } catch (engineErr) {
+          // Não derruba o app — o agente ainda funciona pelas rotas SQLite/regras.
+          console.warn('[useAgent] TCS ONNX não carregou, agente segue sem LLM local:', engineErr);
+        }
         if (mounted) setModelReady(true);
 
         // 5. Monta o agente

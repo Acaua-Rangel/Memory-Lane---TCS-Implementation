@@ -22,6 +22,7 @@ export function useAgent() {
   const agentRef = useRef<LaneAgent | null>(null);
   const dbRef = useRef<LaneDatabase | null>(null);
   const alertServiceRef = useRef<CaregiverAlertService | null>(null);
+  const engineRef = useRef<TCSOnnxEngine | null>(null);
 
   const {
     agentState,
@@ -37,7 +38,7 @@ export function useAgent() {
     setLastResponse,
   } = useAgentStore();
 
-  const { language, elderlyMode } = usePatientStore();
+  const { language, elderlyMode, patientName } = usePatientStore();
 
   // ── Inicialização ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -64,18 +65,18 @@ export function useAgent() {
         const facePipeline = new FacePipeline(embedder, identifier);
         if (mounted) setFaceEngineReady(true);
 
-        // 4. Engine on-device — carrega o TCS exportado (tcs_compression.onnx)
-        // via onnxruntime-react-native e usa o banco para gerar respostas
-        // aterradas em vez de strings fixas.
-        const engine: IGemmaEngine = new TCSOnnxEngine(db);
+        // 4. Engine on-device — carrega tcs_compression.onnx via onnxruntime-react-native.
+        // patientName vem do store React e é passado aqui para o engine não
+        // precisar importar Zustand diretamente (evita acoplamento e erros de contexto).
+        const currentPatientName = usePatientStore.getState().patientName;
+        const tcsEngine = new TCSOnnxEngine(db, currentPatientName);
+        engineRef.current = tcsEngine;
+        const engine: IGemmaEngine = tcsEngine;
         try {
-          await engine.loadModel({
-            modelPath: 'assets/models/tcs_compression.onnx',
-            compressionRatio: 4,
-          });
+          await engine.loadModel({ modelPath: '', compressionRatio: 4 });
         } catch (engineErr) {
-          // Não derruba o app — o agente ainda funciona pelas rotas SQLite/regras.
-          console.warn('[useAgent] TCS ONNX não carregou, agente segue sem LLM local:', engineErr);
+          // Não derruba o app — sqlite_direct / rule_based / face_pipeline continuam funcionando.
+          console.warn('[useAgent] TCS ONNX não carregou:', engineErr);
         }
         if (mounted) setModelReady(true);
 
@@ -94,6 +95,11 @@ export function useAgent() {
     void init();
     return () => { mounted = false; };
   }, []);
+
+  // Mantém patientName do store sincronizado com o engine (sem recriar o engine).
+  useEffect(() => {
+    engineRef.current?.setPatientName(patientName);
+  }, [patientName]);
 
   // ── Processar input de texto ───────────────────────────────────────────────
   const processText = useCallback(async (text: string): Promise<AgentResponse | null> => {

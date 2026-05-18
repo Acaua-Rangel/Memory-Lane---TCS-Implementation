@@ -1,24 +1,21 @@
-// Engine on-device para o LLM do Lane.
+// Engine on-device para o Lane (Token Compression Sub-network).
 //
-// Estado atual da pipeline de export (train_code/src/export_litert.py):
-//   ✅ TCS (Token Compression Sub-network) exportada para ONNX
-//   ❌ Gemma 4 completo NÃO exportado (depende de ai_edge_torch / LiteRT)
+// Estado da pipeline de export (train_code/src/export_litert.py):
+//   ✅ TCS exportada → assets/models/tcs_compression.onnx
+//   ❌ Gemma 4 full ainda não exportado (precisa de ai_edge_torch)
 //
-// Por isso este engine faz duas coisas:
-//   1. Carrega o tcs_compression.onnx via onnxruntime-react-native e executa
-//      a compressão a cada inferência. Isso valida que a parte original do
-//      projeto (a TCS) realmente roda on-device e produz a latência medida.
-//   2. Gera a resposta em texto a partir de templates aterrados no SQLite
-//      (pessoas, memórias, agenda, rotina). Não é "mock" como antes — todo
-//      texto vem do banco real do paciente, não de uma string fixa.
+// O engine faz duas coisas em paralelo:
+//   1. Roda o TCS ONNX de verdade via onnxruntime-react-native a cada
+//      chamada — comprova latência on-device da contribuição técnica original.
+//   2. Constrói a resposta de texto a partir do banco SQLite real do paciente
+//      (pessoas, memórias, encontros, agenda, remédios, locais).
+//      Não é texto fixo — vem dos dados cadastrados pelo cuidador.
 //
-// Quando o Gemma 4 estiver exportado para LiteRT/ONNX, basta trocar
-// `runTcsCompression` por uma pipeline encadeada (embedding → TCS → Gemma
-// blocks → logits) e usar o texto gerado em vez do template.
+// Quando o Gemma 4 estiver exportado para ONNX/LiteRT, encadeie:
+//   embedding_layer(tokens) → TCS forward → transformer_blocks → logits
+// e troque `composeResponse` por decodificação real de tokens.
 
-import { Asset } from 'expo-asset';
 import type { InferenceSession, Tensor } from 'onnxruntime-react-native';
-
 import type {
   CompressionRatio,
   EngineConfig,
@@ -29,10 +26,10 @@ import type {
 import type { LaneDatabase } from '../database/LaneDatabase';
 import { TaskRouter } from '../routing/TaskRouter';
 import { PATTERNS } from '../routing/patterns';
-import { usePatientStore } from '../store/patientStore';
 import type { IGemmaEngine } from './GemmaEngine';
 
-// Lazy require para evitar JSI bindings antes da bridge RN estar pronta.
+// onnxruntime-react-native é carregado lazily para não quebrar antes da
+// bridge nativa do React Native estar pronta.
 type OnnxModule = typeof import('onnxruntime-react-native');
 let _onnx: OnnxModule | null = null;
 function getOnnx(): OnnxModule {
@@ -43,52 +40,51 @@ function getOnnx(): OnnxModule {
   return _onnx;
 }
 
-// Asset bundle resolvido pelo Metro (ver metro.config.js que registra `.onnx`).
+// O require retorna um número (asset module ID) registrado pelo Metro.
+// onnxruntime-react-native >= 1.14 aceita esse ID diretamente em
+// InferenceSession.create() — sem precisar de Asset.fromModule.
+// Veja: https://onnxruntime.ai/docs/tutorials/mobile/reactnative.html
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const TCS_ASSET = require('../../assets/models/tcs_compression.onnx');
+const TCS_MODEL_REF: number = require('@assets/models/tcs_compression.onnx') as number;
 
-// Dimensão de embedding do checkpoint TCS treinado (export logou hidden_size=1536).
-// Se um novo checkpoint mudar esse valor, atualize aqui.
+// Dimensões do checkpoint treinado (o export logou hidden_size=1536).
 const TCS_HIDDEN_SIZE = 1536;
-// Tamanho mínimo de sequência aceito pela TCS (kernel=7, stride=ratio).
-// Para r=4 → 32 cobre o stride mais comum; usamos 32 tokens como prova on-device.
-const TCS_PROBE_SEQ_LEN = 32;
+// Sequência de prova: mínimo coerente para o stride do kernel (r=4 → 32 tokens).
+const TCS_PROBE_SEQ = 32;
 
-type Intent =
-  | 'greeting'
-  | 'memory_recall'
-  | 'memory_about_person'
-  | 'orientation'
-  | 'scene_description'
-  | 'affirmation'
-  | 'farewell'
-  | 'thanks'
-  | 'general';
+type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'night';
 
 export class TCSOnnxEngine implements IGemmaEngine {
   private session: InferenceSession | null = null;
-  private modelUri: string | null = null;
   private ready = false;
   private compressionRatio: CompressionRatio = 4;
   private lastTcsLatencyMs = 0;
 
-  constructor(private readonly db: LaneDatabase) {}
+  // patientName é passado pelo useAgent no momento da construção,
+  // evitando qualquer import do Zustand store dentro desta classe.
+  constructor(
+    private readonly db: LaneDatabase,
+    private patientName: string | null = null,
+  ) {}
+
+  /** Atualiza o nome do paciente sem recriar o engine. */
+  setPatientName(name: string | null): void {
+    this.patientName = name;
+  }
 
   async loadModel(config: EngineConfig): Promise<void> {
     this.compressionRatio = config.compressionRatio ?? 4;
 
-    // Resolve o asset empacotado pelo Metro e baixa se necessário.
-    const asset = Asset.fromModule(TCS_ASSET);
-    if (!asset.localUri) {
-      await asset.downloadAsync();
-    }
-    const uri = asset.localUri ?? asset.uri;
-    if (!uri) throw new Error('TCSOnnxEngine: asset do TCS sem URI');
-    this.modelUri = uri;
+    // InferenceSession.create aceita o número retornado pelo require().
+    // Internamente o ORT RN resolve o asset via React Native's AssetRegistry.
+    this.session = await getOnnx().InferenceSession.create(TCS_MODEL_REF as unknown as string, {
+      executionProviders: ['cpu'],
+    });
 
-    this.session = await getOnnx().InferenceSession.create(uri);
     this.ready = true;
-    console.log('[TCSOnnxEngine] TCS ONNX carregado:', uri);
+    console.log(
+      `[TCSOnnxEngine] TCS ONNX carregado (hidden=${TCS_HIDDEN_SIZE}, ratio=${this.compressionRatio})`,
+    );
   }
 
   unloadModel(): void {
@@ -104,154 +100,109 @@ export class TCSOnnxEngine implements IGemmaEngine {
     return this.compressionRatio;
   }
 
-  // Mantido por compatibilidade com IGemmaEngine — chama generateWithTools
-  // e devolve só o texto.
   async generate(_input: TokenizedInput, ratio?: CompressionRatio): Promise<string> {
-    const text = '';
-    const result = await this.generateWithTools(text, ratio);
+    const result = await this.generateWithTools('', ratio);
     return result.finalResponse;
   }
 
   async generateWithTools(text: string, ratio?: CompressionRatio): Promise<ToolCallResult> {
-    if (!this.session) throw new Error('TCSOnnxEngine: modelo não carregado');
+    if (!this.session) throw new Error('[TCSOnnxEngine] Modelo não inicializado');
 
-    // 1. Roda a TCS de verdade para validar inferência on-device e medir latência.
-    await this.runTcsCompression(ratio ?? this.compressionRatio);
+    // 1. Forward real do TCS — mede latência on-device do modelo.
+    await this.runTcsForward(ratio ?? this.compressionRatio);
 
-    // 2. Constrói resposta aterrada no banco. Pode emitir tool calls quando
-    //    a intenção é "memória sobre pessoa X" (vai pelo read_person).
-    const intent = this.detectIntent(text);
-    const { speech, toolCalls } = await this.composeResponse(text, intent);
+    // 2. Resposta aterrada no banco SQLite do paciente.
+    const intent = detectIntent(text);
+    const { speech, toolCalls } = await this.buildResponse(text, intent);
 
-    return {
-      rawOutput: speech,
-      parsedCalls: toolCalls,
-      finalResponse: speech,
-    };
+    return { rawOutput: speech, parsedCalls: toolCalls, finalResponse: speech };
   }
 
-  // Latência do último forward da TCS — útil para a UI exibir métricas reais.
   getLastTcsLatencyMs(): number {
     return this.lastTcsLatencyMs;
   }
 
-  // ── TCS forward (a parte do modelo que realmente roda on-device) ────────
-  private async runTcsCompression(ratio: CompressionRatio): Promise<void> {
+  // ── TCS forward ──────────────────────────────────────────────────────────
+  private async runTcsForward(ratio: CompressionRatio): Promise<void> {
     if (!this.session) return;
 
-    // Garante que o seq_len é múltiplo do ratio e respeita kernel mínimo.
-    const seqLen = Math.max(TCS_PROBE_SEQ_LEN, ratio * 4);
-    const totalEls = seqLen * TCS_HIDDEN_SIZE;
-    const data = new Float32Array(totalEls);
-    // Inicialização determinística leve: senoidal, mais fiel a embeddings reais
-    // do que randn (e evita Math.random no hot path).
-    for (let i = 0; i < totalEls; i++) {
-      data[i] = Math.sin(i * 0.01) * 0.02;
-    }
+    // Sequência mínima que satisfaz stride = ratio e kernel size 7
+    const seqLen = Math.max(TCS_PROBE_SEQ, ratio * 8);
+    const n = seqLen * TCS_HIDDEN_SIZE;
+    const data = new Float32Array(n);
+    // Inicialização senoidal determinística (mais próxima de embeddings reais)
+    for (let i = 0; i < n; i++) data[i] = Math.sin(i * 0.01) * 0.02;
 
     const inputName = this.session.inputNames[0] ?? 'embeddings';
-    const tensor: Tensor = new (getOnnx().Tensor)(
-      'float32',
-      data,
-      [1, seqLen, TCS_HIDDEN_SIZE],
-    );
+    const Tensor = getOnnx().Tensor;
+    const t: Tensor = new Tensor('float32', data, [1, seqLen, TCS_HIDDEN_SIZE]);
 
-    const start = Date.now();
+    const t0 = Date.now();
     try {
-      await this.session.run({ [inputName]: tensor });
+      await this.session.run({ [inputName]: t });
     } catch (err) {
-      console.warn('[TCSOnnxEngine] Falha ao rodar TCS forward:', err);
+      console.warn('[TCSOnnxEngine] TCS forward falhou:', err);
     } finally {
-      this.lastTcsLatencyMs = Date.now() - start;
+      this.lastTcsLatencyMs = Date.now() - t0;
       console.log(
-        `[TCSOnnxEngine] TCS forward ${seqLen}→${Math.ceil(seqLen / ratio)} tokens em ${this.lastTcsLatencyMs}ms`,
+        `[TCSOnnxEngine] TCS ${seqLen}→${Math.ceil(seqLen / ratio)} tokens em ${this.lastTcsLatencyMs}ms`,
       );
     }
   }
 
-  // ── Geração aterrada no banco — substitui o "Entendi..." genérico ───────
-  private detectIntent(text: string): Intent {
-    const t = text.trim();
-    if (!t) return 'greeting';
-
-    if (PATTERNS.GREETING.test(t)) return 'greeting';
-    if (PATTERNS.MEMORY.test(t)) {
-      // Se o texto cita explicitamente um nome conhecido, vamos buscar por pessoa.
-      return /\b(quem\s+[eé]|me\s+conta|me\s+fala|conte|fale\s+sobre|fala\s+sobre)\b/i.test(t)
-        ? 'memory_about_person'
-        : 'memory_recall';
-    }
-    if (PATTERNS.ORIENTATION.test(t)) return 'orientation';
-    if (PATTERNS.POSITIVE.test(t)) return 'affirmation';
-    if (/\b(tchau|até\s+logo|bye|goodbye|adeus)\b/i.test(t)) return 'farewell';
-    if (/\b(obrigad[ao]|valeu|thanks|thank\s+you)\b/i.test(t)) return 'thanks';
-
-    return 'general';
-  }
-
-  private extractPersonHint(text: string): string | null {
-    // Pega palavras capitalizadas após "sobre/quem é/conte sobre" como pista de nome.
-    const m = text.match(
-      /(?:sobre|quem\s+[eé]|conte\s+sobre|me\s+fala\s+(?:da|do|de)|fala\s+(?:da|do|de))\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i,
-    );
-    return m?.[1] ?? null;
-  }
-
-  private async composeResponse(
+  // ── Resposta aterrada no banco ────────────────────────────────────────────
+  private async buildResponse(
     text: string,
-    intent: Intent,
+    intent: string,
   ): Promise<{ speech: string; toolCalls: ParsedToolCall[] }> {
-    const patientName = usePatientStore.getState().patientName ?? null;
-    const timeOfDay = TaskRouter.timeOfDay();
+    const tod = TaskRouter.timeOfDay();
 
     switch (intent) {
       case 'greeting':
-        return { speech: this.greet(patientName, timeOfDay), toolCalls: [] };
-
-      case 'affirmation':
-        return {
-          speech: 'Tá bom. Estou aqui se precisar de mais alguma coisa.',
-          toolCalls: [],
-        };
+        return { speech: this.greetSpeech(tod), toolCalls: [] };
 
       case 'thanks':
         return {
-          speech: patientName
-            ? `De nada, ${patientName}. Sempre que precisar, é só me chamar.`
-            : 'De nada. Sempre que precisar, é só me chamar.',
+          speech: this.patientName
+            ? `De nada, ${this.patientName}. Pode me chamar quando quiser.`
+            : 'De nada. Pode me chamar quando quiser.',
           toolCalls: [],
         };
 
       case 'farewell':
-        return {
-          speech: 'Até daqui a pouco. Vou ficar aqui pertinho.',
-          toolCalls: [],
-        };
+        return { speech: 'Até logo. Vou ficar aqui pertinho.', toolCalls: [] };
+
+      case 'affirmation':
+        return { speech: 'Tá bom. Estou aqui se precisar.', toolCalls: [] };
 
       case 'memory_about_person': {
-        const hint = this.extractPersonHint(text);
+        const hint = extractPersonHint(text);
         const person = hint ? await this.db.persons.findByName(hint) : null;
         if (person) {
-          const memories = await this.db.memories.findByPersonId(person.id, 2);
-          const last = await this.db.encounters.findLast(person.id);
+          const [memories, last] = await Promise.all([
+            this.db.memories.findByPersonId(person.id, 2),
+            this.db.encounters.findLast(person.id),
+          ]);
           return {
-            speech: this.buildPersonStory(person.name, person.relationship, person.bio, memories, last),
-            toolCalls: [
-              { name: 'read_person', parameters: { face_id: person.id } } as ParsedToolCall,
-            ],
+            speech: buildPersonStory(person.name, person.relationship, person.bio, memories, last),
+            toolCalls: [{ name: 'read_person', parameters: { face_id: person.id } } as ParsedToolCall],
           };
         }
-        // Sem nome reconhecível — lista as pessoas que o paciente costuma encontrar.
+        // Nome não reconhecido — lista as pessoas cadastradas
         const all = await this.db.persons.findAll();
         if (all.length === 0) {
           return {
-            speech: 'Ainda não tenho ninguém registrado. Peça para sua cuidadora me apresentar suas pessoas queridas.',
+            speech:
+              'Ainda não conheço ninguém. Peça para sua cuidadora me apresentar sua família.',
             toolCalls: [],
           };
         }
-        const names = all.slice(0, 4).map((p) => `${p.name} (${p.relationship})`).join(', ');
+        const names = all
+          .slice(0, 4)
+          .map((p) => `${p.name} (${p.relationship})`)
+          .join(', ');
         return {
-          speech: `Posso te contar sobre algumas pessoas: ${names}. Sobre quem você quer saber?`,
+          speech: `Posso te contar sobre: ${names}. Sobre quem você quer saber?`,
           toolCalls: [],
         };
       }
@@ -260,105 +211,116 @@ export class TCSOnnxEngine implements IGemmaEngine {
         const recent = await this.db.encounters.findRecent(72);
         if (recent.length === 0) {
           return {
-            speech: 'Ainda não anotei encontros recentes. Conte para mim quando alguém aparecer, eu guardo pra você.',
+            speech:
+              'Não registrei encontros recentes. Quando alguém chegar, me avisa que eu anoto.',
             toolCalls: [],
           };
         }
-        const ids = Array.from(new Set(recent.map((e) => e.personId))).slice(0, 3);
-        const people = await Promise.all(ids.map((id) => this.db.persons.findById(id)));
-        const validNames = people
-          .filter((p): p is NonNullable<typeof p> => Boolean(p))
-          .map((p) => p.name);
-        if (validNames.length === 0) {
-          return {
-            speech: 'Esses dias passaram algumas pessoas, mas ainda não tenho o nome delas registrado.',
-            toolCalls: [],
-          };
+        const ids = [...new Set(recent.map((e) => e.personId))].slice(0, 3);
+        const people = (await Promise.all(ids.map((id) => this.db.persons.findById(id)))).filter(
+          (p): p is NonNullable<typeof p> => Boolean(p),
+        );
+        if (people.length === 0) {
+          return { speech: 'Houve algumas visitas, mas ainda não os registrei pelo nome.', toolCalls: [] };
         }
-        const list =
-          validNames.length === 1
-            ? validNames[0]
-            : `${validNames.slice(0, -1).join(', ')} e ${validNames[validNames.length - 1]}`;
+        const nameList = joinList(people.map((p) => p.name));
         return {
-          speech: `Nos últimos dias passaram por aqui: ${list}. Quer que eu conte mais sobre alguém?`,
+          speech: `Nos últimos dias passaram por aqui: ${nameList}. Quer que eu conte mais sobre alguém?`,
           toolCalls: [],
         };
       }
 
       case 'orientation': {
-        const locations = await this.db.locations.findAll();
-        if (locations.length === 0) {
-          return {
-            speech: 'Você está em casa. Respira fundo, está tudo bem.',
-            toolCalls: [],
-          };
+        const locs = await this.db.locations.findAll();
+        if (locs.length === 0) {
+          return { speech: 'Você está em casa. Respira fundo — está tudo seguro.', toolCalls: [] };
         }
-        const hints = locations
+        const hints = locs
           .slice(0, 3)
           .map((l) => l.navigationHint)
           .filter(Boolean)
           .join(' ');
         return {
-          speech: hints
-            ? `Você está em casa. ${hints}`
-            : 'Você está em casa, tudo seguro.',
+          speech: hints ? `Você está em casa. ${hints}` : 'Você está em casa, tudo tranquilo.',
           toolCalls: [],
         };
       }
 
-      case 'scene_description':
-        return {
-          speech: 'Estou vendo o ambiente. Se quiser saber onde está ou quem está aí, é só me perguntar.',
-          toolCalls: [],
-        };
-
-      case 'general':
       default: {
-        // Para perguntas genéricas, recapitulamos o que Lane pode fazer ao invés
-        // de cuspir uma frase pronta sem contexto.
+        // Resposta de fallback com contexto real do banco
         const [peopleCount, meds] = await Promise.all([
           this.db.persons.count(),
           this.db.medications.findAll().then((m) => m.length).catch(() => 0),
         ]);
-        const namePart = patientName ? `, ${patientName}` : '';
-        const stat = peopleCount > 0
-          ? ` Tenho ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} registradas`
-          : '';
-        const medPart = meds > 0 ? ` e ${meds} ${meds === 1 ? 'remédio cadastrado' : 'remédios cadastrados'}.` : '.';
+        const namePart = this.patientName ? `, ${this.patientName}` : '';
+        const peoplePart =
+          peopleCount > 0
+            ? ` Conheço ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} cadastradas`
+            : '';
+        const medPart =
+          meds > 0
+            ? ` e ${meds} ${meds === 1 ? 'remédio cadastrado' : 'remédios cadastrados'}`
+            : '';
         return {
-          speech: `Estou aqui${namePart}.${stat}${medPart} Posso te ajudar com remédios, agenda, lembrar de pessoas ou contar uma memória — só dizer.`,
+          speech: `Estou aqui${namePart}.${peoplePart}${medPart}. Pode perguntar sobre remédio, agenda, rotina ou uma pessoa que você quer lembrar.`,
           toolCalls: [],
         };
       }
     }
   }
 
-  private greet(name: string | null, timeOfDay: ReturnType<typeof TaskRouter.timeOfDay>): string {
+  private greetSpeech(tod: TimeOfDay): string {
     const period =
-      timeOfDay === 'morning' ? 'Bom dia' :
-      timeOfDay === 'afternoon' ? 'Boa tarde' :
-      'Boa noite';
-    const who = name ? `, ${name}` : '';
+      tod === 'morning' ? 'Bom dia' : tod === 'afternoon' ? 'Boa tarde' : 'Boa noite';
+    const who = this.patientName ? `, ${this.patientName}` : '';
     return `${period}${who}. Eu sou o Lane, estou aqui com você. Pode me perguntar qualquer coisa.`;
   }
+}
 
-  private buildPersonStory(
-    name: string,
-    relationship: string,
-    bio: string,
-    memories: Array<{ title: string; description: string }>,
-    last: { timestamp: number; context: string } | null,
-  ): string {
-    let response = `Essa é ${name}, sua ${relationship}. ${bio}`;
-    if (memories.length > 0) {
-      response += ` Uma lembrança: ${memories[0].description}`;
-    }
-    if (last) {
-      const days = Math.floor((Date.now() - last.timestamp) / (1000 * 60 * 60 * 24));
-      if (days === 0) response += ' Vocês se viram hoje.';
-      else if (days === 1) response += ' Vocês se viram ontem.';
-      else if (days < 7) response += ` Vocês se viram há ${days} dias.`;
-    }
-    return response;
+// ── Helpers puramente funcionais (fora da classe) ────────────────────────────
+
+function detectIntent(text: string): string {
+  const t = text.trim();
+  if (!t) return 'greeting';
+  if (PATTERNS.GREETING.test(t)) return 'greeting';
+  if (/\b(obrigad[ao]|valeu|thanks|thank\s+you)\b/i.test(t)) return 'thanks';
+  if (/\b(tchau|até\s+logo|bye|goodbye|adeus)\b/i.test(t)) return 'farewell';
+  if (PATTERNS.POSITIVE.test(t)) return 'affirmation';
+  if (PATTERNS.MEMORY.test(t)) {
+    return /\b(quem\s+[eé]|me\s+conta|conte|fale?\s+sobre|me\s+fala)\b/i.test(t)
+      ? 'memory_about_person'
+      : 'memory_recall';
   }
+  if (PATTERNS.ORIENTATION.test(t)) return 'orientation';
+  return 'general';
+}
+
+function extractPersonHint(text: string): string | null {
+  const m = text.match(
+    /(?:sobre|quem\s+[eé]|conte\s+sobre|me\s+fala\s+(?:da|do|de)|fale?\s+(?:da|do|de))\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇ]+)/i,
+  );
+  return m?.[1] ?? null;
+}
+
+function buildPersonStory(
+  name: string,
+  relationship: string,
+  bio: string,
+  memories: Array<{ description: string }>,
+  last: { timestamp: number } | null,
+): string {
+  let s = `Essa é ${name}, sua ${relationship}. ${bio}`;
+  if (memories.length > 0) s += ` Uma lembrança: ${memories[0].description}`;
+  if (last) {
+    const days = Math.floor((Date.now() - last.timestamp) / 86_400_000);
+    if (days === 0) s += ' Vocês se viram hoje.';
+    else if (days === 1) s += ' Vocês se viram ontem.';
+    else if (days < 7) s += ` Vocês se viram há ${days} dias.`;
+  }
+  return s;
+}
+
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} e ${items[items.length - 1]}`;
 }

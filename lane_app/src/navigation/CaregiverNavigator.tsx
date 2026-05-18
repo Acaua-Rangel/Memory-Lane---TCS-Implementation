@@ -79,12 +79,12 @@ const TAB_ICON: Record<string, string> = {
 export function CaregiverNavigator() {
   return (
     <Tab.Navigator
-      screenOptions={({ route }) => ({
+      screenOptions={({ route }: { route: { name: string } }) => ({
         headerShown: false,
         tabBarIcon: () => (
           <Text style={{ fontSize: 22 }}>{TAB_ICON[route.name]}</Text>
         ),
-        tabBarLabel: ({ focused }) => {
+        tabBarLabel: ({ focused }: { focused: boolean }) => {
           const labels: Record<string, string> = {
             PeopleTab: 'Pessoas',
             AgendaTab: 'Agenda',

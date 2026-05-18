@@ -70,7 +70,7 @@ export function useAgent() {
         const engine: IGemmaEngine = new TCSOnnxEngine(db);
         try {
           await engine.loadModel({
-            modelPath: 'assets/models/tcs_compression.onnx',
+            modelPath: 'assets/tcs_compression.onnx',
             compressionRatio: 4,
           });
         } catch (engineErr) {

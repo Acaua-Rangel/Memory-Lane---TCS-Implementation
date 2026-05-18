@@ -45,7 +45,7 @@ function getOnnx(): OnnxModule {
 
 // Asset bundle resolvido pelo Metro (ver metro.config.js que registra `.onnx`).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const TCS_ASSET = require('../../assets/models/tcs_compression.onnx');
+const TCS_ASSET = require('../../assets/tcs_compression.onnx');
 
 // Dimensão de embedding do checkpoint TCS treinado (export logou hidden_size=1536).
 // Se um novo checkpoint mudar esse valor, atualize aqui.

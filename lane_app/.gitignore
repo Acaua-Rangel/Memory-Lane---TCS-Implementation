@@ -11,6 +11,7 @@ web-build/
 .env
 .env.local
 .DS_Store
-*.onnx
-*.tflite
-assets/models/
+# modelos ML grandes podem ser excluídos, mas para o hackathon rastreamos o TCS
+# *.onnx
+# *.tflite
+# assets/models/
